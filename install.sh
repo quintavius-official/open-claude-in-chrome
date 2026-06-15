@@ -29,8 +29,7 @@ fi
 EXTENSION_IDS=("$@")
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST_DIR="$SCRIPT_DIR/host"
-NATIVE_HOST_PATH="$HOST_DIR/native-host-wrapper.sh"
-HOST_NAME="com.anthropic.open_claude_in_chrome"
+NATIVE_HOST_NAME="com.anthropic.open_claude_in_chrome"
 
 # Verify node is available
 if ! command -v node &> /dev/null; then
@@ -45,15 +44,31 @@ if [ ! -d "$HOST_DIR/node_modules" ]; then
   cd "$SCRIPT_DIR"
 fi
 
-# Create the native host wrapper script
-# Chrome launches this via native messaging — it needs to find node and the script.
-cat > "$NATIVE_HOST_PATH" << WRAPPER
-#!/bin/sh
-exec "$(which node)" "$HOST_DIR/native-host.js"
-WRAPPER
-chmod +x "$NATIVE_HOST_PATH"
+# Verify compilation tools are available
+if ! command -v gcc &> /dev/null && ! command -v cc &> /dev/null; then
+  echo "Error: C compiler (gcc/cc) not found. Install Xcode Command Line Tools."
+  exit 1
+fi
 
-echo "Created native host wrapper: $NATIVE_HOST_PATH"
+CC="gcc"
+command -v gcc &> /dev/null || CC="cc"
+
+# Compile the native messaging host launcher
+# Chrome on macOS may refuse to execute shell scripts as native messaging hosts
+# due to security restrictions. A compiled binary avoids this issue.
+NATIVE_HOST_PATH="$HOST_DIR/launcher-native-host"
+
+NODE_PATH="$(which node)"
+SCRIPT_PATH="$HOST_DIR/native-host.js"
+$CC -x c - -o "$NATIVE_HOST_PATH" -O2 <<ENDCODE
+#include <unistd.h>
+int main() {
+    execl("$NODE_PATH", "node", "$SCRIPT_PATH", NULL);
+    return 1;
+}
+ENDCODE
+
+echo "Compiled native host: $NATIVE_HOST_PATH"
 
 # Build allowed_origins array from all extension IDs
 ORIGINS=""
@@ -67,7 +82,7 @@ done
 generate_manifest() {
   cat << EOF
 {
-  "name": "$HOST_NAME",
+  "name": "$NATIVE_HOST_NAME",
   "description": "Open Claude in Chrome Native Messaging Host",
   "path": "$NATIVE_HOST_PATH",
   "type": "stdio",
@@ -88,7 +103,7 @@ install_host() {
   fi
 
   mkdir -p "$host_dir"
-  generate_manifest > "$host_dir/$HOST_NAME.json"
+  generate_manifest > "$host_dir/$NATIVE_HOST_NAME.json"
   echo "  Installed for $browser_name: $host_dir/$HOST_NAME.json"
 }
 
